@@ -1,0 +1,11 @@
+node_modules
+web/node_modules
+web/dist
+.git
+.github
+app
+logs
+config/*.toml
+config/credentials
+config/logs
+src/example

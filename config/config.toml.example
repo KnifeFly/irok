@@ -1,0 +1,32 @@
+[server]
+host = "0.0.0.0"
+port = 13120
+admin_api_key = "change-me"
+public_url = "http://127.0.0.1:13120"
+
+[files]
+config_dir = "config"
+pools_path = "config/pools.toml"
+prompts_path = "config/prompts.toml"
+credentials_dir = "config/credentials/kiro"
+
+[logging]
+dir = "config/logs"
+level = "info"
+
+[refresh]
+near_minutes = 30
+max_retries = 3
+base_delay_ms = 1000
+
+[kiro]
+default_region = "us-east-1"
+default_idc_region = "us-east-1"
+default_model = "claude-sonnet-4-5"
+assistant_identity = "AI 编程助手"
+auth_service_url = "https://prod.us-east-1.auth.desktop.kiro.dev"
+oidc_url_template = "https://oidc.{{region}}.amazonaws.com"
+refresh_url_template = "https://prod.{{region}}.auth.desktop.kiro.dev/refreshToken"
+base_url_template = "https://q.{{region}}.amazonaws.com/generateAssistantResponse"
+kiro_version = "0.11.63"
+callback_path = "/oauth/kiro/callback"

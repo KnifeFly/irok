@@ -1,0 +1,6 @@
+[[prompts]]
+model = "*"
+enabled = false
+mode = "prepend"
+content = ""
+note = "Default prompt rule"

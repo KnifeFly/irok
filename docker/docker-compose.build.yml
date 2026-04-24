@@ -1,0 +1,13 @@
+services:
+  aiclient-kiro:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: aiclient-kiro:latest
+    container_name: aiclient-kiro
+    restart: unless-stopped
+    ports:
+      - "13120:13120"
+      - "19876-19880:19876-19880"
+    volumes:
+      - ../config:/app/config

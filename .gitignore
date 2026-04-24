@@ -1,0 +1,13 @@
+node_modules/
+web/node_modules/
+web/*.tsbuildinfo
+web/vite.config.js
+web/vite.config.d.ts
+
+config/*.toml
+config/credentials/
+config/logs/
+
+.DS_Store
+dist/
+coverage/
