@@ -13,4 +13,13 @@ export type KiroNode = {
   note?: string;
   created_at?: string;
   updated_at?: string;
+  credential_status?: CredentialStatus;
+};
+
+export type CredentialStatus = {
+  state: "active" | "expiring" | "expired" | "missing" | "invalid" | "unknown";
+  message: string;
+  expires_at?: string;
+  refreshable: boolean;
+  has_refresh_token: boolean;
 };

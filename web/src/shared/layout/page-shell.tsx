@@ -1,30 +1,36 @@
 import type { ReactNode } from "react";
-import { ActivityIcon, FileTextIcon, KeyRoundIcon, ServerIcon } from "lucide-react";
+import { ActivityIcon, FileTextIcon, KeyRoundIcon, ScrollTextIcon, ServerIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { href: "#overview", label: "Overview", icon: ActivityIcon },
-  { href: "#nodes", label: "Kiro Pool", icon: ServerIcon },
-  { href: "#prompts", label: "Prompts", icon: FileTextIcon },
-  { href: "#access", label: "Access", icon: KeyRoundIcon },
-];
+export type NavSection = "overview" | "nodes" | "prompts" | "access" | "logs";
 
-export function PageShell({ children }: { children: ReactNode }) {
+const navItems = [
+  { href: "#overview", id: "overview", label: "概览", icon: ActivityIcon },
+  { href: "#nodes", id: "nodes", label: "Kiro 账号池", icon: ServerIcon },
+  { href: "#prompts", id: "prompts", label: "提示词", icon: FileTextIcon },
+  { href: "#access", id: "access", label: "访问配置", icon: KeyRoundIcon },
+  { href: "#logs", id: "logs", label: "日志", icon: ScrollTextIcon },
+] satisfies Array<{ href: `#${NavSection}`; id: NavSection; label: string; icon: typeof ActivityIcon }>;
+
+export function PageShell({ activeSection, children }: { activeSection: NavSection; children: ReactNode }) {
   return (
     <div className="min-h-screen">
       <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-border bg-card/80 px-4 py-5 backdrop-blur lg:block">
         <div className="flex flex-col gap-1">
-          <div className="text-lg font-semibold">AIClient Kiro</div>
-          <div className="text-sm text-muted-foreground">Claude-compatible local gateway</div>
+          <div className="text-lg font-semibold">orik</div>
+          <div className="text-sm text-muted-foreground">Claude 兼容本地网关</div>
         </div>
-        <nav className="mt-8 flex flex-col gap-1">
+        <nav aria-label="主导航" className="mt-8 flex flex-col gap-1">
           {navItems.map((item) => {
             const Icon = item.icon;
+            const isActive = activeSection === item.id;
             return (
               <a
+                aria-current={isActive ? "page" : undefined}
                 className={cn(
                   "flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground",
+                  isActive && "bg-muted font-medium text-foreground",
                 )}
                 href={item.href}
                 key={item.href}

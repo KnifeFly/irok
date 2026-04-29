@@ -1,13 +1,14 @@
+name: orik
+
 services:
-  aiclient-kiro:
+  orik:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: aiclient-kiro:dev
-    container_name: aiclient-kiro-dev
+    image: orik:dev
+    container_name: orik-dev
     restart: unless-stopped
     ports:
       - "13120:13120"
-      - "19876-19880:19876-19880"
     volumes:
       - ../config:/app/config

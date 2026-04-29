@@ -1,15 +1,17 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlertTriangleIcon,
   CheckCircle2Icon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
-  FileTextIcon,
   KeyRoundIcon,
   Loader2Icon,
+  LogOutIcon,
   PlusIcon,
   RefreshCwIcon,
-  ServerIcon,
+  ShieldCheckIcon,
   Trash2Icon,
   XCircleIcon,
 } from "lucide-react";
@@ -26,11 +28,12 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { importCredentials, listNodes, refreshNode, saveNode, startOAuth, deleteNode } from "@/features/pools/api";
-import type { KiroNode } from "@/features/pools/types";
+import type { CredentialStatus, KiroNode } from "@/features/pools/types";
 import { listPrompts, savePrompts } from "@/features/prompts/api";
 import type { PromptRule } from "@/features/prompts/types";
-import { getLogTail, getStatus } from "@/features/status/api";
-import { PageShell } from "@/shared/layout/page-shell";
+import { getLogTail, getStatus, validateAdminKey } from "@/features/status/api";
+import { ApiError } from "@/shared/api/api-client";
+import { PageShell, type NavSection } from "@/shared/layout/page-shell";
 import { useSessionStore } from "@/shared/api/session-store";
 
 const nodeSchema = z.object({
@@ -40,11 +43,44 @@ const nodeSchema = z.object({
 });
 
 const promptModes: PromptRule["mode"][] = ["prepend", "append", "override", "off"];
+const promptModeLabels: Record<PromptRule["mode"], string> = {
+  prepend: "前置",
+  append: "追加",
+  override: "覆盖",
+  off: "关闭",
+};
+
+const sectionIds: NavSection[] = ["overview", "nodes", "prompts", "access", "logs"];
+const sectionMeta: Record<NavSection, { title: string; description: string }> = {
+  overview: {
+    title: "orik 控制台",
+    description: "管理 Kiro 账号池、模型系统提示词、OAuth 接入、日志和 Claude 兼容 API 状态。",
+  },
+  nodes: {
+    title: "Kiro 账号池",
+    description: "维护可用账号节点、凭据文件和刷新状态。",
+  },
+  prompts: {
+    title: "模型系统提示词",
+    description: "按模型配置系统提示词规则，精确模型匹配优先于通配规则。",
+  },
+  access: {
+    title: "访问配置",
+    description: "查看 Claude 兼容接口的调用方式和当前登录状态。",
+  },
+  logs: {
+    title: "运行日志",
+    description: "查看服务日志尾部内容，辅助排查鉴权、刷新和请求错误。",
+  },
+};
 
 export function DashboardView() {
   const queryClient = useQueryClient();
-  const { adminKey, setAdminKey } = useSessionStore();
-  const [draftKey, setDraftKey] = useState(adminKey);
+  const { adminKey, clearAdminKey, rememberAdminKey, setAdminKey } = useSessionStore();
+  const activeSection = useActiveSection();
+  const currentSection = sectionMeta[activeSection];
+  const [loginPassword, setLoginPassword] = useState("");
+  const [rememberLogin, setRememberLogin] = useState(rememberAdminKey);
   const [nodeSheetOpen, setNodeSheetOpen] = useState(false);
   const [editingNode, setEditingNode] = useState<KiroNode | null>(null);
   const [credentialDialogOpen, setCredentialDialogOpen] = useState(false);
@@ -57,10 +93,21 @@ export function DashboardView() {
   const promptsQuery = useQuery({ queryKey: ["prompts"], queryFn: listPrompts, enabled: Boolean(adminKey) });
   const logsQuery = useQuery({ queryKey: ["logs"], queryFn: () => getLogTail(160), enabled: Boolean(adminKey), refetchInterval: 15_000 });
 
+  const loginMutation = useMutation({
+    mutationFn: ({ password }: { password: string; remember: boolean }) => validateAdminKey(password),
+    onSuccess: async (_status, variables) => {
+      setAdminKey(variables.password, { remember: variables.remember });
+      setLoginPassword("");
+      toast.success("登录成功");
+      await queryClient.invalidateQueries();
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
   const saveNodeMutation = useMutation({
     mutationFn: saveNode,
     onSuccess: async () => {
-      toast.success("Kiro node saved");
+      toast.success("Kiro 节点已保存");
       setNodeSheetOpen(false);
       setEditingNode(null);
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
@@ -72,7 +119,7 @@ export function DashboardView() {
   const deleteNodeMutation = useMutation({
     mutationFn: deleteNode,
     onSuccess: async () => {
-      toast.success("Node deleted");
+      toast.success("节点已删除");
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
       await queryClient.invalidateQueries({ queryKey: ["status"] });
     },
@@ -82,7 +129,7 @@ export function DashboardView() {
   const refreshNodeMutation = useMutation({
     mutationFn: refreshNode,
     onSuccess: async () => {
-      toast.success("Refresh queued");
+      toast.success("已加入刷新队列");
       await queryClient.invalidateQueries({ queryKey: ["nodes"] });
     },
     onError: (error) => toast.error(error.message),
@@ -91,7 +138,7 @@ export function DashboardView() {
   const savePromptsMutation = useMutation({
     mutationFn: savePrompts,
     onSuccess: async () => {
-      toast.success("Prompt rules saved");
+      toast.success("提示词规则已保存");
       setPromptSheetOpen(false);
       setEditingPrompt(null);
       await queryClient.invalidateQueries({ queryKey: ["prompts"] });
@@ -104,11 +151,31 @@ export function DashboardView() {
   const prompts = promptsQuery.data ?? [];
   const healthyNodes = nodes.filter((node) => node.enabled && node.healthy).length;
   const selectedPromptModels = useMemo(() => new Set(prompts.map((rule) => rule.model)), [prompts]);
+  const credentialAlerts = nodes.filter((node) => {
+    const state = node.credential_status?.state;
+    return state === "expired" || state === "expiring" || state === "missing" || state === "invalid";
+  });
 
-  function saveKey(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    if (statusQuery.error instanceof ApiError && statusQuery.error.status === 401) {
+      clearAdminKey();
+      toast.error("登录已失效，请重新登录");
+    }
+  }, [clearAdminKey, statusQuery.error]);
+
+  function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setAdminKey(draftKey.trim());
-    void queryClient.invalidateQueries();
+    const password = loginPassword.trim();
+    if (!password) {
+      toast.error("请输入管理员密码");
+      return;
+    }
+    loginMutation.mutate({ password, remember: rememberLogin });
+  }
+
+  function logout() {
+    clearAdminKey();
+    void queryClient.clear();
   }
 
   function openNewNode() {
@@ -125,7 +192,7 @@ export function DashboardView() {
       note: String(form.get("note") ?? ""),
     });
     if (!parsed.success) {
-      toast.error("Name and credential path are required");
+      toast.error("请填写名称和凭据路径");
       return;
     }
     saveNodeMutation.mutate({
@@ -150,53 +217,63 @@ export function DashboardView() {
     savePromptsMutation.mutate([...next, rule]);
   }
 
+  if (!adminKey) {
+    return (
+      <LoginView
+        isPending={loginMutation.isPending}
+        onPasswordChange={setLoginPassword}
+        onRememberChange={setRememberLogin}
+        onSubmit={submitLogin}
+        password={loginPassword}
+        remember={rememberLogin}
+      />
+    );
+  }
+
   return (
-    <PageShell>
+    <PageShell activeSection={activeSection}>
       <header className="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
         <div className="flex flex-col gap-2">
-          <div className="text-sm font-medium text-muted-foreground">Kiro reverse proxy</div>
-          <h1 className="text-3xl font-semibold tracking-normal">AIClient Kiro Console</h1>
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Manage Kiro account pools, model system prompts, OAuth onboarding, logs, and Claude-compatible API status.
-          </p>
+          <div className="text-sm font-medium text-muted-foreground">orik / Kiro 反向代理</div>
+          <h1 className="text-3xl font-semibold tracking-normal">{currentSection.title}</h1>
+          <p className="max-w-2xl text-sm text-muted-foreground">{currentSection.description}</p>
         </div>
-        <form className="flex w-full gap-2 md:w-auto" onSubmit={saveKey}>
-          <Input
-            aria-label="Admin API key"
-            className="md:w-72"
-            onChange={(event) => setDraftKey(event.target.value)}
-            placeholder="Admin API key"
-            type="password"
-            value={draftKey}
-          />
-          <Button type="submit">
-            <KeyRoundIcon data-icon="inline-start" />
-            Apply
+        <div className="flex items-center gap-2">
+          <Badge variant="outline">
+            <ShieldCheckIcon data-icon="inline-start" />
+            admin
+          </Badge>
+          <Button onClick={logout} variant="outline">
+            <LogOutIcon data-icon="inline-start" />
+            退出
           </Button>
-        </form>
+        </div>
       </header>
 
-      <section className="grid gap-4 md:grid-cols-4" id="overview">
-        <MetricCard label="Healthy nodes" value={`${healthyNodes}/${nodes.length}`} />
-        <MetricCard label="Requests" value={String(statusQuery.data?.requests_total ?? 0)} />
-        <MetricCard label="Failures" value={String(statusQuery.data?.failures_total ?? 0)} />
-        <MetricCard label="Prompt rules" value={String(prompts.length)} />
-      </section>
+      {activeSection === "overview" ? (
+        <section className="grid gap-4 md:grid-cols-4" id="overview">
+          <MetricCard label="健康节点" value={`${healthyNodes}/${nodes.length}`} />
+          <MetricCard label="请求数" value={String(statusQuery.data?.requests_total ?? 0)} />
+          <MetricCard label="失败数" value={String(statusQuery.data?.failures_total ?? 0)} />
+          <MetricCard label="提示词规则" value={String(prompts.length)} />
+        </section>
+      ) : null}
 
       {statusQuery.data?.config_warnings?.length ? (
         <Card>
           <CardHeader>
-            <CardTitle>Configuration warnings</CardTitle>
+            <CardTitle>配置警告</CardTitle>
             <CardDescription>{statusQuery.data.config_warnings.join(" · ")}</CardDescription>
           </CardHeader>
         </Card>
       ) : null}
 
+      {activeSection === "nodes" ? (
       <Card id="nodes">
         <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <CardTitle>Kiro account pool</CardTitle>
-            <CardDescription>Nodes are persisted in pools.toml. Credential files stay in the mounted config directory.</CardDescription>
+            <CardTitle>Kiro 账号池</CardTitle>
+            <CardDescription>节点保存在 pools.toml 中，凭据文件保留在挂载的 config 目录。</CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => setOauthDialogOpen(true)} variant="outline">
@@ -205,25 +282,35 @@ export function DashboardView() {
             </Button>
             <Button onClick={() => setCredentialDialogOpen(true)} variant="outline">
               <KeyRoundIcon data-icon="inline-start" />
-              Import
+              导入凭据
             </Button>
             <Button onClick={openNewNode}>
               <PlusIcon data-icon="inline-start" />
-              Add node
+              添加节点
             </Button>
           </div>
         </CardHeader>
         <CardContent>
+          {credentialAlerts.length ? (
+            <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm">
+              <div className="flex items-center gap-2 font-medium text-destructive">
+                <AlertTriangleIcon data-icon="inline-start" />
+                {credentialAlerts.length} 个节点的凭据需要处理
+              </div>
+              <p className="mt-1 text-muted-foreground">已过期或缺少 refresh token 的节点需要手动刷新、重新 OAuth，或重新导入凭据。</p>
+            </div>
+          ) : null}
           <div className="overflow-x-auto rounded-md border border-border">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Credential</TableHead>
-                  <TableHead>Usage</TableHead>
-                  <TableHead>Last error</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+                  <TableHead>名称</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>凭据状态</TableHead>
+                  <TableHead>凭据</TableHead>
+                  <TableHead>用量</TableHead>
+                  <TableHead>最近错误</TableHead>
+                  <TableHead className="text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -236,14 +323,17 @@ export function DashboardView() {
                     <TableCell>
                       <NodeStatus node={node} />
                     </TableCell>
+                    <TableCell>
+                      <CredentialStatusCell status={node.credential_status} />
+                    </TableCell>
                     <TableCell className="max-w-xs truncate font-mono text-xs">{node.credential_path}</TableCell>
                     <TableCell>{node.usage_count}</TableCell>
-                    <TableCell className="max-w-xs truncate text-muted-foreground">{node.last_error || "None"}</TableCell>
+                    <TableCell className="max-w-xs truncate text-muted-foreground">{node.last_error || "无"}</TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-2">
                         <Button onClick={() => refreshNodeMutation.mutate(node.id)} size="sm" variant="outline">
                           <RefreshCwIcon data-icon="inline-start" />
-                          Refresh
+                          刷新
                         </Button>
                         <Button
                           onClick={() => {
@@ -253,11 +343,11 @@ export function DashboardView() {
                           size="sm"
                           variant="outline"
                         >
-                          Edit
+                          编辑
                         </Button>
                         <Button onClick={() => deleteNodeMutation.mutate(node.id)} size="sm" variant="destructive">
                           <Trash2Icon data-icon="inline-start" />
-                          Delete
+                          删除
                         </Button>
                       </div>
                     </TableCell>
@@ -265,8 +355,8 @@ export function DashboardView() {
                 ))}
                 {nodes.length === 0 ? (
                   <TableRow>
-                    <TableCell className="py-8 text-center text-muted-foreground" colSpan={6}>
-                      No Kiro nodes configured.
+                    <TableCell className="py-8 text-center text-muted-foreground" colSpan={7}>
+                      暂未配置 Kiro 节点。
                     </TableCell>
                   </TableRow>
                 ) : null}
@@ -275,12 +365,14 @@ export function DashboardView() {
           </div>
         </CardContent>
       </Card>
+      ) : null}
 
+      {activeSection === "prompts" ? (
       <Card id="prompts">
         <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
           <div>
-            <CardTitle>Model system prompts</CardTitle>
-            <CardDescription>Rules are persisted in prompts.toml. Exact model matches override the wildcard rule.</CardDescription>
+            <CardTitle>模型系统提示词</CardTitle>
+            <CardDescription>规则保存在 prompts.toml 中，精确模型匹配优先于通配规则。</CardDescription>
           </div>
           <Button
             onClick={() => {
@@ -289,7 +381,7 @@ export function DashboardView() {
             }}
           >
             <PlusIcon data-icon="inline-start" />
-            Add prompt
+            添加提示词
           </Button>
         </CardHeader>
         <CardContent>
@@ -306,71 +398,78 @@ export function DashboardView() {
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-sm font-medium">{rule.model}</span>
-                  <Badge variant={rule.enabled ? "secondary" : "outline"}>{rule.enabled ? "enabled" : "disabled"}</Badge>
-                  <Badge variant="outline">{rule.mode}</Badge>
+                  <Badge variant={rule.enabled ? "secondary" : "outline"}>{rule.enabled ? "启用" : "停用"}</Badge>
+                  <Badge variant="outline">{promptModeLabels[rule.mode]}</Badge>
                 </div>
-                <p className="line-clamp-2 text-sm text-muted-foreground">{rule.content || "No prompt content configured."}</p>
+                <p className="line-clamp-2 text-sm text-muted-foreground">{rule.content || "暂未配置提示词内容。"}</p>
               </button>
             ))}
           </div>
         </CardContent>
       </Card>
+      ) : null}
 
-      <section className="grid gap-4 lg:grid-cols-[1fr_1.3fr]" id="access">
+      {activeSection === "access" ? (
+      <section id="access">
         <Card>
           <CardHeader>
             <CardTitle>Claude API</CardTitle>
-            <CardDescription>Use the admin API key as a bearer token for Claude-compatible clients.</CardDescription>
+            <CardDescription>Claude 兼容客户端可将管理员密钥作为 Bearer Token 使用。</CardDescription>
           </CardHeader>
           <CardContent>
             <pre className="overflow-x-auto rounded-md bg-muted p-4 text-xs">{`curl http://localhost:13120/v1/messages \\
-  -H "Authorization: Bearer ${adminKey || "change-me"}" \\
+  -H "Authorization: Bearer <管理员密码>" \\
   -H "Content-Type: application/json" \\
   -d '{"model":"claude-sonnet-4-5","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'`}</pre>
             <Button className="mt-3" onClick={() => copyText("http://localhost:13120/v1/messages")} variant="outline">
               <CopyIcon data-icon="inline-start" />
-              Copy endpoint
+              复制端点
             </Button>
           </CardContent>
         </Card>
+      </section>
+      ) : null}
 
+      {activeSection === "logs" ? (
+      <section id="logs">
         <Card>
           <CardHeader>
-            <CardTitle>Logs</CardTitle>
-            <CardDescription>Tail of config/logs/app.log.</CardDescription>
+            <CardTitle>日志</CardTitle>
+            <CardDescription>显示 config/logs/app.log 的尾部内容。</CardDescription>
           </CardHeader>
           <CardContent>
             <pre className="h-72 overflow-auto rounded-md bg-muted p-4 text-xs leading-5 text-muted-foreground">
-              {(logsQuery.data?.lines ?? []).join("\n") || "No logs yet."}
+              {(logsQuery.data?.lines ?? []).join("\n") || "暂无日志。"}
             </pre>
           </CardContent>
         </Card>
       </section>
+      ) : null}
 
       <Sheet onOpenChange={setNodeSheetOpen} open={nodeSheetOpen}>
         <SheetContent>
           <SheetHeader>
-            <SheetTitle>{editingNode ? "Edit Kiro node" : "Add Kiro node"}</SheetTitle>
-            <SheetDescription>Point a pool node at an existing Kiro credential JSON file.</SheetDescription>
+            <SheetTitle>{editingNode ? "编辑 Kiro 节点" : "添加 Kiro 节点"}</SheetTitle>
+            <SheetDescription>将账号池节点指向已有的 Kiro 凭据 JSON 文件。</SheetDescription>
           </SheetHeader>
           <form className="flex flex-1 flex-col gap-4 overflow-auto px-4" onSubmit={submitNode}>
-            <Field label="Name">
-              <Input defaultValue={editingNode?.name ?? ""} name="name" placeholder="Kiro primary" />
+            <Field label="名称">
+              <Input defaultValue={editingNode?.name ?? ""} name="name" placeholder="Kiro 主节点" />
             </Field>
-            <Field label="Credential path">
+            <Field label="凭据路径">
               <Input defaultValue={editingNode?.credential_path ?? ""} name="credential_path" placeholder="config/credentials/kiro/node.json" />
             </Field>
-            <Field label="Note">
-              <Textarea defaultValue={editingNode?.note ?? ""} name="note" placeholder="Optional operator note" />
+            <Field label="备注">
+              <Textarea defaultValue={editingNode?.note ?? ""} name="note" placeholder="可选的运维备注" />
             </Field>
             <label className="flex items-center gap-2 text-sm">
               <input defaultChecked={editingNode?.enabled ?? true} name="enabled" type="checkbox" />
-              Enabled
+              启用
             </label>
             <SheetFooter>
               <Button disabled={saveNodeMutation.isPending} type="submit">
                 {saveNodeMutation.isPending ? <Loader2Icon data-icon="inline-start" /> : null}
-                Save node
+                保存节点
               </Button>
             </SheetFooter>
           </form>
@@ -380,39 +479,39 @@ export function DashboardView() {
       <Sheet onOpenChange={setPromptSheetOpen} open={promptSheetOpen}>
         <SheetContent>
           <SheetHeader>
-            <SheetTitle>{editingPrompt ? "Edit prompt rule" : "Add prompt rule"}</SheetTitle>
-            <SheetDescription>Use * as the fallback rule. Exact model IDs win over the wildcard.</SheetDescription>
+            <SheetTitle>{editingPrompt ? "编辑提示词规则" : "添加提示词规则"}</SheetTitle>
+            <SheetDescription>使用 * 作为兜底规则；精确模型 ID 优先于通配规则。</SheetDescription>
           </SheetHeader>
           <form className="flex flex-1 flex-col gap-4 overflow-auto px-4" onSubmit={submitPrompt}>
-            <Field label="Model">
+            <Field label="模型">
               <Input
                 defaultValue={editingPrompt?.model ?? nextPromptModel(statusQuery.data?.models ?? [], selectedPromptModels)}
                 name="model"
-                placeholder="claude-sonnet-4-5 or *"
+                placeholder="claude-sonnet-4-5 或 *"
               />
             </Field>
-            <Field label="Mode">
+            <Field label="模式">
               <Select defaultValue={editingPrompt?.mode ?? "prepend"} name="mode">
                 {promptModes.map((mode) => (
                   <option key={mode} value={mode}>
-                    {mode}
+                    {promptModeLabels[mode]}
                   </option>
                 ))}
               </Select>
             </Field>
-            <Field label="System prompt">
-              <Textarea defaultValue={editingPrompt?.content ?? ""} name="content" placeholder="System prompt for this model" />
+            <Field label="系统提示词">
+              <Textarea defaultValue={editingPrompt?.content ?? ""} name="content" placeholder="这个模型使用的系统提示词" />
             </Field>
-            <Field label="Note">
-              <Input defaultValue={editingPrompt?.note ?? ""} name="note" placeholder="Optional note" />
+            <Field label="备注">
+              <Input defaultValue={editingPrompt?.note ?? ""} name="note" placeholder="可选备注" />
             </Field>
             <label className="flex items-center gap-2 text-sm">
               <input defaultChecked={editingPrompt?.enabled ?? true} name="enabled" type="checkbox" />
-              Enabled
+              启用
             </label>
             <SheetFooter>
               <Button disabled={savePromptsMutation.isPending} type="submit">
-                Save prompt
+                保存提示词
               </Button>
             </SheetFooter>
           </form>
@@ -423,6 +522,86 @@ export function DashboardView() {
       <OAuthDialog onOpenChange={setOauthDialogOpen} open={oauthDialogOpen} />
     </PageShell>
   );
+}
+
+function LoginView({
+  isPending,
+  onPasswordChange,
+  onRememberChange,
+  onSubmit,
+  password,
+  remember,
+}: {
+  isPending: boolean;
+  onPasswordChange: (value: string) => void;
+  onRememberChange: (value: boolean) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  password: string;
+  remember: boolean;
+}) {
+  return (
+    <main className="flex min-h-screen items-center justify-center px-4">
+      <Card className="w-full max-w-md">
+        <CardHeader>
+          <div className="mb-2 flex size-10 items-center justify-center rounded-md bg-primary text-primary-foreground">
+            <KeyRoundIcon />
+          </div>
+          <CardTitle>登录 orik</CardTitle>
+          <CardDescription>使用 config.toml 中的 admin_api_key 作为 admin 密码。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col gap-4" onSubmit={onSubmit}>
+            <Field label="管理员账号">
+              <Input disabled value="admin" />
+            </Field>
+            <Field label="管理员密码">
+              <Input
+                autoComplete="current-password"
+                autoFocus
+                onChange={(event) => onPasswordChange(event.target.value)}
+                placeholder="输入 admin_api_key"
+                type="password"
+                value={password}
+              />
+            </Field>
+            <label className="flex items-start gap-2 text-sm text-muted-foreground">
+              <input checked={remember} onChange={(event) => onRememberChange(event.target.checked)} type="checkbox" />
+              <span>保持登录。默认只保存到当前浏览器会话，勾选后才写入本机 localStorage。</span>
+            </label>
+            <Button disabled={isPending} type="submit">
+              {isPending ? <Loader2Icon data-icon="inline-start" /> : <KeyRoundIcon data-icon="inline-start" />}
+              登录
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </main>
+  );
+}
+
+function useActiveSection() {
+  const [activeSection, setActiveSection] = useState<NavSection>(() => readActiveSection());
+
+  useEffect(() => {
+    function syncHash() {
+      setActiveSection(readActiveSection());
+      window.scrollTo({ top: 0 });
+    }
+
+    syncHash();
+    window.addEventListener("hashchange", syncHash);
+    return () => window.removeEventListener("hashchange", syncHash);
+  }, []);
+
+  return activeSection;
+}
+
+function readActiveSection(): NavSection {
+  if (typeof window === "undefined") {
+    return "overview";
+  }
+  const hash = window.location.hash.replace(/^#/, "");
+  return sectionIds.includes(hash as NavSection) ? (hash as NavSection) : "overview";
 }
 
 function MetricCard({ label, value }: { label: string; value: string }) {
@@ -438,22 +617,60 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 
 function NodeStatus({ node }: { node: KiroNode }) {
   if (!node.enabled) {
-    return <Badge variant="outline">disabled</Badge>;
+    return <Badge variant="outline">停用</Badge>;
   }
   if (node.healthy) {
     return (
       <Badge variant="secondary">
         <CheckCircle2Icon data-icon="inline-start" />
-        healthy
+        健康
       </Badge>
     );
   }
   return (
     <Badge variant="destructive">
       <XCircleIcon data-icon="inline-start" />
-      unhealthy
+      异常
     </Badge>
   );
+}
+
+function CredentialStatusCell({ status }: { status?: CredentialStatus }) {
+  if (!status) {
+    return <Badge variant="outline">未知</Badge>;
+  }
+  const label = credentialStateLabel(status.state);
+  const variant = status.state === "active" ? "secondary" : status.state === "unknown" ? "outline" : "destructive";
+  const Icon = status.state === "active" ? CheckCircle2Icon : status.state === "expiring" ? ClockIcon : AlertTriangleIcon;
+  return (
+    <div className="flex max-w-xs flex-col gap-1">
+      <Badge variant={variant}>
+        <Icon data-icon="inline-start" />
+        {label}
+      </Badge>
+      <div className="text-xs text-muted-foreground">
+        {status.expires_at ? `过期时间：${formatDateTime(status.expires_at)}` : status.message}
+      </div>
+      {!status.refreshable && status.state !== "active" ? <div className="text-xs text-destructive">缺少 refresh token，需要重新授权或导入。</div> : null}
+    </div>
+  );
+}
+
+function credentialStateLabel(state: CredentialStatus["state"]) {
+  switch (state) {
+    case "active":
+      return "有效";
+    case "expiring":
+      return "即将过期";
+    case "expired":
+      return "已过期";
+    case "missing":
+      return "文件缺失";
+    case "invalid":
+      return "无效";
+    case "unknown":
+      return "未知";
+  }
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -472,7 +689,7 @@ function CredentialImportDialog({ open, onOpenChange }: { open: boolean; onOpenC
   const mutation = useMutation({
     mutationFn: importCredentials,
     onSuccess: async () => {
-      toast.success("Credentials imported");
+      toast.success("凭据已导入");
       setText("");
       setName("");
       onOpenChange(false);
@@ -486,7 +703,7 @@ function CredentialImportDialog({ open, onOpenChange }: { open: boolean; onOpenC
     try {
       mutation.mutate({ name: name || undefined, credentials: JSON.parse(text) as unknown });
     } catch {
-      toast.error("Credentials must be valid JSON");
+      toast.error("凭据必须是有效的 JSON");
     }
   }
 
@@ -494,20 +711,20 @@ function CredentialImportDialog({ open, onOpenChange }: { open: boolean; onOpenC
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Import Kiro credentials</DialogTitle>
-          <DialogDescription>Paste one credential object or an array of credential objects.</DialogDescription>
+          <DialogTitle>导入 Kiro 凭据</DialogTitle>
+          <DialogDescription>粘贴一个凭据对象，或粘贴凭据对象数组。</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
-          <Field label="Node name">
-            <Input onChange={(event) => setName(event.target.value)} placeholder="Kiro imported" value={name} />
+          <Field label="节点名称">
+            <Input onChange={(event) => setName(event.target.value)} placeholder="Kiro 导入节点" value={name} />
           </Field>
-          <Field label="Credentials JSON">
+          <Field label="凭据 JSON">
             <Textarea onChange={(event) => setText(event.target.value)} placeholder='{"accessToken":"...","refreshToken":"..."}' value={text} />
           </Field>
         </div>
         <DialogFooter>
           <Button disabled={mutation.isPending} onClick={submit}>
-            Import
+            导入
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -521,7 +738,7 @@ function OAuthDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (ope
   const mutation = useMutation({
     mutationFn: startOAuth,
     onSuccess: (result) => {
-      toast.success("OAuth flow started");
+      toast.success("OAuth 流程已启动");
       window.open(result.auth_url, "_blank", "noopener,noreferrer");
     },
     onError: (error) => toast.error(error.message),
@@ -531,25 +748,25 @@ function OAuthDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (ope
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Start Kiro OAuth</DialogTitle>
-          <DialogDescription>Social auth opens a browser callback. Builder ID returns a device authorization URL.</DialogDescription>
+          <DialogTitle>启动 Kiro OAuth</DialogTitle>
+          <DialogDescription>社交登录会打开浏览器回调，Builder ID 会返回设备授权地址。</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
-          <Field label="Method">
+          <Field label="方式">
             <Select onChange={(event) => setMethod(event.target.value)} value={method}>
               <option value="google">Google</option>
               <option value="github">GitHub</option>
               <option value="builder-id">Builder ID</option>
             </Select>
           </Field>
-          <Field label="Node name">
+          <Field label="节点名称">
             <Input onChange={(event) => setNodeName(event.target.value)} placeholder="Kiro OAuth" value={nodeName} />
           </Field>
         </div>
         <DialogFooter>
           <Button disabled={mutation.isPending} onClick={() => mutation.mutate({ method, node_name: nodeName || undefined })}>
             <ExternalLinkIcon data-icon="inline-start" />
-            Start
+            开始
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -561,7 +778,15 @@ function nextPromptModel(models: string[], selected: Set<string>) {
   return models.find((model) => !selected.has(model)) ?? "*";
 }
 
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
 async function copyText(value: string) {
   await navigator.clipboard.writeText(value);
-  toast.success("Copied");
+  toast.success("已复制");
 }

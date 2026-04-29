@@ -1,4 +1,4 @@
-module aiclient2api
+module orik
 
 go 1.24
 

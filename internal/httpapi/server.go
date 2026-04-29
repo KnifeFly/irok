@@ -16,13 +16,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"aiclient2api/internal/assets"
-	kiroauth "aiclient2api/internal/auth/kiro"
-	"aiclient2api/internal/config"
-	"aiclient2api/internal/logtail"
-	"aiclient2api/internal/pool"
-	"aiclient2api/internal/prompt"
-	"aiclient2api/internal/provider"
+	"orik/internal/assets"
+	kiroauth "orik/internal/auth/kiro"
+	"orik/internal/config"
+	"orik/internal/logtail"
+	"orik/internal/pool"
+	"orik/internal/prompt"
+	"orik/internal/provider"
 )
 
 type Server struct {
@@ -239,7 +239,7 @@ func (s *Server) handlePutPrompts(w http.ResponseWriter, r *http.Request) error 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) error {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, s.pools.List())
+		writeJSON(w, http.StatusOK, s.nodeViews())
 		return nil
 	case http.MethodPost:
 		var node pool.Node
@@ -293,6 +293,88 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) error {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 	return nil
+}
+
+type nodeView struct {
+	pool.Node
+	CredentialStatus credentialStatus `json:"credential_status"`
+}
+
+type credentialStatus struct {
+	State           string `json:"state"`
+	Message         string `json:"message"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	Refreshable     bool   `json:"refreshable"`
+	HasRefreshToken bool   `json:"has_refresh_token"`
+}
+
+func (s *Server) nodeViews() []nodeView {
+	nodes := s.pools.List()
+	out := make([]nodeView, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, nodeView{
+			Node:             node,
+			CredentialStatus: s.credentialStatus(node),
+		})
+	}
+	return out
+}
+
+func (s *Server) credentialStatus(node pool.Node) credentialStatus {
+	path := node.CredentialPath
+	if path == "" {
+		return credentialStatus{State: "missing", Message: "未配置凭据路径"}
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Clean(path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return credentialStatus{State: "missing", Message: "凭据文件不存在或不可读"}
+	}
+	var creds struct {
+		AccessToken  string `json:"accessToken"`
+		RefreshToken string `json:"refreshToken"`
+		ExpiresAt    string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return credentialStatus{State: "invalid", Message: "凭据 JSON 无法解析"}
+	}
+	status := credentialStatus{
+		HasRefreshToken: creds.RefreshToken != "",
+		Refreshable:     creds.RefreshToken != "",
+		ExpiresAt:       creds.ExpiresAt,
+	}
+	if creds.AccessToken == "" {
+		status.State = "invalid"
+		status.Message = "缺少 accessToken"
+		return status
+	}
+	if creds.ExpiresAt == "" {
+		status.State = "unknown"
+		status.Message = "凭据未包含 expiresAt，无法判断过期时间"
+		return status
+	}
+	expiresAt, err := time.Parse(time.RFC3339, creds.ExpiresAt)
+	if err != nil {
+		status.State = "invalid"
+		status.Message = "expiresAt 格式无效"
+		return status
+	}
+	now := time.Now().UTC()
+	if now.After(expiresAt) {
+		status.State = "expired"
+		status.Message = "凭据已过期"
+		return status
+	}
+	if now.Add(time.Duration(s.cfg.Refresh.NearMinutes) * time.Minute).After(expiresAt) {
+		status.State = "expiring"
+		status.Message = "凭据即将过期"
+		return status
+	}
+	status.State = "active"
+	status.Message = "凭据有效"
+	return status
 }
 
 func (s *Server) handleOAuthStart(w http.ResponseWriter, r *http.Request) error {
@@ -409,7 +491,7 @@ func modelsForStatus() []string {
 func configWarnings(cfg config.Config) []string {
 	var warnings []string
 	if cfg.Server.AdminAPIKey == "change-me" {
-		warnings = append(warnings, "admin_api_key is still the default value")
+		warnings = append(warnings, "admin_api_key 仍为默认值")
 	}
 	return warnings
 }

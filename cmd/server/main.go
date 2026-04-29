@@ -10,12 +10,12 @@ import (
 	"path/filepath"
 	"time"
 
-	kiroauth "aiclient2api/internal/auth/kiro"
-	"aiclient2api/internal/config"
-	"aiclient2api/internal/httpapi"
-	"aiclient2api/internal/pool"
-	"aiclient2api/internal/prompt"
-	kiroprovider "aiclient2api/internal/provider/kiro"
+	kiroauth "orik/internal/auth/kiro"
+	"orik/internal/config"
+	"orik/internal/httpapi"
+	"orik/internal/pool"
+	"orik/internal/prompt"
+	kiroprovider "orik/internal/provider/kiro"
 )
 
 func main() {
@@ -61,7 +61,7 @@ func main() {
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 
-	logger.Info("AIClient Kiro server starting", "addr", cfg.Address())
+	logger.Info("orik server starting", "addr", cfg.Address())
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)

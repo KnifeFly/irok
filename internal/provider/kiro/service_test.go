@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"aiclient2api/internal/config"
-	"aiclient2api/internal/pool"
-	"aiclient2api/internal/provider"
+	"orik/internal/config"
+	"orik/internal/pool"
+	"orik/internal/provider"
 )
 
 func TestCreateMessageWithMockKiroResponse(t *testing.T) {

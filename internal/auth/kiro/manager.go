@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"aiclient2api/internal/config"
-	"aiclient2api/internal/pool"
-	kiroprovider "aiclient2api/internal/provider/kiro"
+	"orik/internal/config"
+	"orik/internal/pool"
+	kiroprovider "orik/internal/provider/kiro"
 )
 
 type Manager struct {
@@ -117,7 +117,7 @@ func (m *Manager) Callback(ctx context.Context, values url.Values) (pool.Node, e
 		return pool.Node{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("User-Agent", "AIClient-2-API/2.0")
+	httpReq.Header.Set("User-Agent", "orik/0.1")
 	resp, err := m.client.Do(httpReq)
 	if err != nil {
 		return pool.Node{}, err

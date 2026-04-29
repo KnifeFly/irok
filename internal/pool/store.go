@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"aiclient2api/internal/config"
 	"github.com/pelletier/go-toml/v2"
+	"orik/internal/config"
 )
 
 type File struct {

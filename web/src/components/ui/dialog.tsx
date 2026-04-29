@@ -54,7 +54,7 @@ function DialogContent({
             render={<Button className="absolute right-2 top-2" size="icon" variant="ghost" />}
           >
             <XIcon />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">关闭</span>
           </DialogPrimitive.Close>
         ) : null}
       </DialogPrimitive.Popup>

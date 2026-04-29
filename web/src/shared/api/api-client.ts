@@ -47,7 +47,7 @@ async function parse<T>(response: Response): Promise<T> {
   if (body && typeof body === "object" && "success" in body) {
     const wrapped = body as ApiResponse<T>;
     if (!wrapped.success) {
-      throw new ApiError(wrapped.message ?? "Request failed", response.status);
+      throw new ApiError(wrapped.message ?? "请求失败", response.status);
     }
     return wrapped.data;
   }
